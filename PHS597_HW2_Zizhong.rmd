@@ -1,0 +1,254 @@
+---
+title: "PHS597 Data Mining and ML in Genetics HW#2"
+author: "Zizhong Tian"
+date: "10/03/2022"
+output: html_document
+---
+
+This assignment is to compare Principal Component Regression (PCR) estimate and Partial Least Square (PLS) estimate with that from LASSO regression. I use a dataset mentioned in an online book about LASSO (https://bookdown.org/tpinto_home/Regularisation/lasso-regression.html). The data is about body fat and body measurements for males, which includes $252$ observations and $17$ predictors for the outcome variable, percentage body fat using Brozek's equation.
+
+## Implement LASSO
+
+```{r, warning=F, message=F}
+library(glmnet)
+library(faraway)
+
+data(fat)
+
+X <- model.matrix(brozek ~ ., data=fat)
+Y <- fat[,"brozek"]
+
+lasso_model <- cv.glmnet(X[,-1], Y, alpha = 1)
+
+lambda <- lasso_model$lambda.min
+#lambda
+
+best_lasso <- glmnet(x=X[,-1], y=Y, alpha = 1, lambda = lambda)
+#as.vector(coef(best_lasso))
+
+```
+
+## Steps for implementing PCR
+
+Do the singular value decomposition such that $X=UDV^T$.
+
+The full set of principal components (PCs) can be expressed in matrix form as $Z=XV=UD$.
+
+Using the top $M$ PCs in the model such that $Z_M=(z_1,...,z_m)$, we have $Y=Z_M\theta_M+\epsilon$, so $\hat{\theta}_M=(Z_M^TZ_M)^{-1}Z_M^T Y$. Back to the original predictors,
+$$\hat{\beta}^{PCR}_{(M)}=(v_1,...,v_M)\hat{\theta}_M$$
+Below is a function for implementing PCR:
+```{r}
+#Function for implementing PCR
+my_PCR <- function(X, Y, M){
+  U <- svd(X)$u
+  V <- svd(X)$v
+  
+  Z <- X %*% V #nxp
+  
+  #tuning parameter: the number of top PCs to be kept
+  #M <- 15
+  
+  Z_M <- Z[,1:M]
+  
+  theta_M <- solve(t(Z_M) %*% Z_M) %*% t(Z_M) %*% Y
+  
+  V_M <- V[,1:M]
+  
+  beta_PCR <- V_M %*% theta_M
+  return(beta_PCR)
+  
+  #test =ls
+  #beta_ls <- solve(t(X) %*% X) %*% t(X) %*% Y
+  #beta_ls
+}
+
+
+```
+
+
+## Algorithm for implementing PLS
+
+Let $Z=(z_1,...,z_p)$, $X=(x_1,...,x_p)$.
+
+(1) Initialize $X^{(0)}=(x_1^{(0)},...,x_p^{(0)})=X$;
+
+(2) For iteration $m=1,...,p$, we firstly calculate $z_m=X^{(m-1)}\phi^{(m)}$, where $\phi^{(m)}=(X^{(m-1)})^T Y$ is $p\times 1$. Then, we update $x_j^{(m)}$ for $j=1,...,p$ with
+$$x_j^{(m)}=x_j^{(m-1)}-\frac{z_m^Tx_j^{(m-1)}}{z_m^Tz_m}z_m$$;
+
+(3) Repeat (2) and get $(z_1,...,z_p)$.
+
+Using $M$ PLS directions, $Z_M=X\Gamma_M$, $\theta_M=(z_1^TY/z_1^Tz_1,...,z_M^TY/z_M^Tz_M)$, then the estimates for the original parameters can be expressed as
+$$\hat{\beta}_M^{PLS}=\Gamma_M\theta_M=(X^TX)^{-1}X^TZ_M\theta_M$$
+Below is a function for implementing PLS:
+```{r, message=F, warning=F}
+#Function for implementing PLS
+my_PLS <- function(X, Y, M){
+  #X <- model.matrix(brozek ~ ., data=train)
+  #Y <- train[,"brozek"]
+
+  n <- dim(X)[1]
+  p <- dim(X)[2]
+  
+  Z <- matrix(0, nrow=n, ncol=p)
+  
+  X_old <- X
+  
+  for (m in 1:p){
+    #m=1
+    theta <- t(X_old) %*% Y
+  
+    Z[,m] <- X_old %*% theta
+    
+    z_m <- as.vector(Z[,m])
+
+    #update X for j=1:p
+    X_new <- matrix(0, nrow=n, ncol=p)
+    for (j in 1:p){
+      x_j <- as.vector(X_old[,j])
+      x_j_new <- x_j - (t(z_m) %*% x_j)/(t(z_m) %*% z_m) * z_m
+      X_new[,j] <- x_j_new
+    }
+    
+    X_old <- X_new
+  }
+  
+  #tuning parameter: number of PLS directions
+  #M <- 1
+  
+  theta_M <- NULL
+  for (m in 1:M){
+    theta_M[m] <- (t(Z[,m]) %*% Y)/(t(Z[,m]) %*% Z[,m]) 
+  }
+  
+  Z_M <- Z[,1:M]
+  
+  Gamma_M <- solve(t(X)%*%X)%*%t(X)%*%Z_M
+  
+  beta_PLS <- Gamma_M %*% theta_M
+  
+  return(beta_PLS)
+}
+
+
+```
+
+To tune the parameters ($M$) for PCR and PLS, I do 5-fold cross-validations (CVs) and select the corresponding optimal parameter in terms of minimal mean squared errors (MSEs).
+
+## 5-fold CV
+```{r}
+#Split the data
+set.seed(1234)
+fat <- fat[sample(1:nrow(fat)),]
+fat1 <- fat[1:50,]
+fat2 <- fat[51:100,]
+fat3 <- fat[101:150,]
+fat4 <- fat[151:201,]
+fat5 <- fat[202:252,]
+
+train1 <- rbind(fat2, fat3, fat4, fat5)
+train2 <- rbind(fat1, fat3, fat4, fat5)
+train3 <- rbind(fat1, fat2, fat4, fat5)
+train4 <- rbind(fat1, fat2, fat3, fat5)
+train5 <- rbind(fat1, fat2, fat3, fat4)
+
+```
+
+The CV-MSE of PCR is $1.3696$, at $M=14$.
+```{r}
+calc_SSE_PCR <- function(train, test, M){
+  #train=train1; test=fat1; M=1
+  X <- model.matrix(brozek ~ ., data=train)
+  test_X <- model.matrix(brozek ~ ., data=test)
+  Y <- train[,"brozek"]
+  test_Y <- test[,"brozek"]
+  
+  beta_est <- my_PCR(X=X, Y=Y, M=M)
+  est_Y <- test_X %*% beta_est
+  SSE <- sum((est_Y-test_Y)^2)
+  return(SSE)
+}
+
+MSE <- NULL
+for (i in 1:17){
+  MSE[i] <- mean(calc_SSE_PCR(train1, fat1, M=i),
+                 calc_SSE_PCR(train2, fat2, M=i),
+                 calc_SSE_PCR(train3, fat3, M=i),
+                 calc_SSE_PCR(train4, fat4, M=i),
+                 calc_SSE_PCR(train5, fat5, M=i))
+}
+
+which.min(MSE)
+
+beta_PCR <- my_PCR(X=model.matrix(brozek ~ ., data=fat),
+                   Y=fat[,"brozek"],
+                   M=which.min(MSE))
+#beta_PCR
+min(MSE)
+```
+
+The CV-MSE of PLS is $0.9380$, at $M=11$.
+```{r, warning=F, message=F}
+calc_SSE_PLS <- function(train, test, M){
+  #train=train1; test=fat1; M=2
+  X <- model.matrix(brozek ~ ., data=train)
+  test_X <- model.matrix(brozek ~ ., data=test)
+  Y <- train[,"brozek"]
+  test_Y <- test[,"brozek"]
+  
+  beta_est <- my_PLS(X=X, Y=Y, M=M)
+  est_Y <- test_X %*% beta_est
+  SSE <- sum((est_Y-test_Y)^2)
+  return(SSE)
+}
+
+#calc_SSE_PLS(train1, fat1, M=10)
+
+MSE <- NULL
+for (i in 1:17){
+  MSE[i] <- mean(calc_SSE_PLS(train1, fat1, M=i),
+                 calc_SSE_PLS(train2, fat2, M=i),
+                 calc_SSE_PLS(train3, fat3, M=i),
+                 calc_SSE_PLS(train4, fat4, M=i),
+                 calc_SSE_PLS(train5, fat5, M=i))
+}
+
+which.min(MSE)
+
+beta_PLS <- my_PLS(X=model.matrix(brozek ~ ., data=fat),
+                   Y=fat[,"brozek"],
+                   M=which.min(MSE))
+#beta_PLS
+min(MSE)
+```
+
+We also check the CV-MSE for LASSO. That is $1.3849 (>1.3696>0.9380)$. So, regarding the CV-MSE, PLS performs the best in prediction.
+```{r}
+calc_SSE_LASSO <- function(train, test){
+  X <- model.matrix(brozek ~ ., data=train)
+  test_X <- model.matrix(brozek ~ ., data=test)
+  Y <- train[,"brozek"]
+  test_Y <- test[,"brozek"]
+  m_lasso <- glmnet(x=X[,-1], y=Y, alpha = 1, lambda = lambda)
+  beta_est <- as.vector(coef(m_lasso))
+  est_Y <- test_X %*% beta_est
+  SSE <- sum((est_Y-test_Y)^2)
+  return(SSE)
+}
+
+MSE_lasso <- mean(calc_SSE_LASSO(train1, fat1),
+                  calc_SSE_LASSO(train2, fat2),
+                  calc_SSE_LASSO(train3, fat3),
+                  calc_SSE_LASSO(train4, fat4),
+                  calc_SSE_LASSO(train5, fat5))
+
+MSE_lasso
+
+```
+
+Finally, we also visually compare the parameter estimates among the three methods. We can observe that while LASSO does some variable selection, PCR and PLS only do certain shrinkage on the parameters. The latter two give similar estimates in overall.
+
+```{r}
+cbind(as.vector(coef(best_lasso)), beta_PCR, beta_PLS)
+```
+
+

@@ -1,0 +1,200 @@
+---
+title: "PHS597 Data Mining and ML in Genetics HW#1"
+author: "Zizhong Tian"
+date: "9/17/2022"
+output: html_document
+---
+
+## Exercise 1 (Gram Schmitt orthogonalization algorithm)
+
+First, we simulate some data and provide the least-square estimates:
+```{r}
+set.seed(1234)
+x0 <- rep(100, 1)
+x1 <- rnorm(100, mean=1, sd=1)
+x2 <- rnorm(100, mean=0, sd=2)
+x3 <- rbinom(100, 1, 0.3)
+epsilon <- rnorm(100, mean=0, sd=1)
+
+beta0 <- 1
+beta1 <- 0.5
+beta2 <- 0.7
+beta3 <- 0.3
+
+Y <- beta0*x0 + beta1*x1 + beta2*x2 + beta3*x3 + epsilon
+
+X <- as.matrix(cbind(x0, x1, x2, x3))
+
+est_beta <- solve(t(X) %*% X) %*% t(X) %*% Y
+
+est_beta
+```
+Then, we implement the algorithm 3.1 on book:
+
+1. Initialize $z_0=x_0=\boldsymbol{1}$;
+
+2. For $j=1,2,...,p$, regress $X_j$ on $z_0,z_1,...,z_{j-1}$ to produce coefficients $\hat{\gamma_{lj}}$, $l=0,...,j-1$ and residual vector $z_j=x_j-\sum_{k=0}^{j-1}\hat{\gamma}_{kj} z_k$;
+
+3. Regress $y$ on the residual $z_p$ to give the estimate $\hat{\beta}_p$.
+
+```{r}
+z0 <- rep(1, 100)
+
+#j=1,l=0
+gamma_01 <- as.numeric(t(z0)%*%x1 / (t(z0)%*%z0))
+z1 <- x1 - (gamma_01*z0)
+test_beta1 <- t(z1)%*%Y / (t(z1)%*%z1)
+
+#j=2,l=1
+gamma_02 <- as.numeric(t(z0)%*%x2 / (t(z0)%*%z0))
+gamma_12 <- as.numeric(t(z1)%*%x2 / (t(z1)%*%z1))
+z2 <- x2 - (gamma_02*z0+gamma_12*z1)
+test_beta2 <- t(z2)%*%Y / (t(z2)%*%z2)
+
+#j=3,l=2
+gamma_03 <- as.numeric(t(z0)%*%x3 / (t(z0)%*%z0))
+gamma_13 <- as.numeric(t(z1)%*%x3 / (t(z1)%*%z1))
+gamma_23 <- as.numeric(t(z2)%*%x3 / (t(z2)%*%z2))
+z3 <- x3 - (gamma_03*z0+gamma_13*z1+gamma_23*z2)
+test_beta3 <- as.numeric(t(z3)%*%Y / (t(z3)%*%z3)) #only the last estimate can apply
+test_beta3
+```
+We can see that $\beta_3$ estimate from the algorithm is consistent with that from the least-square estimation.
+
+## Exercise 2 (LASSO based on cyclic coordinate descent algorithm and in "glmnet")
+
+First, we manage the data and focus on the first gene. We extract the "start" and "end" position indicators for gene $1$ and only keep the "covariates" at the position scope between $start-50,000$ and $end+50,000$. Based on the following manipulation, $358$ observations and $2,178$ genetic variants (predictors) were included in the analysis of gene $1$.
+```{r}
+setwd("C:\\Users\\Zizhong\\OneDrive - The Pennsylvania State University\\Desktop\\PHS597_Data mining and machine learning in Genomics\\gene_expression_sample")
+dt1 <- read.table("GEUVADIS_normalized_expression_chr20.txt", header=T)
+dt2 <- read.table("GEUVADIS_chr20_processed.traw.txt", header=T)
+
+#gene id=1
+Y <- dt1[1, 5:362]#182
+
+pos_lower <- dt1$start[1]-500000
+pos_upper <- dt1$end[1]+500000
+cov_ind <- dt2$POS>=pos_lower & dt2$POS<=pos_upper
+
+X <- dt2[cov_ind, 7:364]#184
+
+#make a dataframe for the analysis of gene 1
+X_dt <- t(as.matrix(X))
+dim(X_dt)
+dt <- data.frame(cbind(as.numeric(Y), rep(1, length(Y)), X_dt))
+cov_names <- NULL
+for (i in 1:dim(X_dt)[2]){
+  cov_names[i] <- paste0("x",i)
+}
+names(dt) <- c("y", "x0", cov_names)
+```
+
+#### Implement LASSO based on "glmnet"
+
+We firstly try LASSO based on the existing package. We performed cross-validation to determine the optimal lambda at $0.378$. Using this lambda parameter, we than fit the LASSO regression model as follows.
+```{r, message=F, warning=F}
+library(glmnet)
+
+cv_model <- cv.glmnet(data.matrix(dt[,3:ncol(dt)]), dt$y, alpha = 1)
+lambda <- cv_model$lambda.min
+#lambda
+
+best_model <- glmnet(x=data.matrix(dt[,3:ncol(dt)]), 
+                     y=dt$y, 
+                     alpha = 1, lambda = 0.378)
+coef(best_model)[1:50]
+```
+#### Implement LASSO based on cyclic coordinate descent
+
+To implement the cyclic coordinate descent algorithm, we do the following derivations about the beta updating rules:
+$$L=\frac{1}{2n}\sum^n_{i=1}\left(y_i-x_{ij}\beta_j-\sum_{k\ne j}x_{ik}\beta_k\right)^2+\lambda|\beta_j|+\lambda\sum_{k\ne j}|\beta_k|$$
+Taking derivatives with respect to $\beta_j$ and set the derivatives to $0$, we can get
+$$\begin{cases}
+-\frac{1}{n}\sum^n_{i=1}x_{ij}(y_i-\sum^p_{k\ne j}\beta_k x_{ik})+\frac{1}{n}\beta_j\sum_{i=1}^nx_{ij}^2-\lambda=0,~~\text{if}~~\beta_j<0\\
+-\lambda \le \frac{1}{n}\sum^n_{i=1}x_{ij}(y_i-\sum^p_{k\ne j}\beta_k x_{ik})\le \lambda,~~\text{if}~~\beta_j=0\\
+-\frac{1}{n}\sum^n_{i=1}x_{ij}(y_i-\sum^p_{k\ne j}\beta_k x_{ik})+\frac{1}{n}\beta_j\sum_{i=1}^nx_{ij}^2+\lambda=0,~~\text{if}~~\beta_j>0\\
+\end{cases}$$
+Let $A_j=\frac{1}{n}\sum^n_{i=1}x_{ij}(y_i-\sum^p_{k\ne j}\beta_k x_{ik})$ and $B_j=\frac{1}{n}\sum_{i=1}^nx_{ij}^2$. Then,
+$$\begin{cases}
+\beta_j=(A_j+\lambda)/B_j,~~\text{if}~~A_j<-\lambda\\
+\beta_j=0,~~\text{if}~~-\lambda\le A_j \le \lambda\\
+\beta_j=(A_j-\lambda)/B_j,~~\text{if}~~A_j>\lambda\\
+\end{cases}$$
+
+The following functions will help to extract data in a more general way and help do the algorithm:
+```{r}
+extract_Y <- function(gene_id){
+  return(as.numeric(dt1[gene_id, 5:362]))
+}
+
+extract_X <- function(gene_id){
+  pos_lower <- dt1$start[gene_id]-500000
+  pos_upper <- dt1$end[gene_id]+500000
+  cov_ind <- dt2$POS>=pos_lower & dt2$POS<=pos_upper
+
+  X <- dt2[cov_ind, 7:364]#184
+  return(t(as.matrix(X)))
+}
+
+update_beta <- function(A, B, lambda){
+  if (A < -lambda) {return((A+lambda)/B)}
+  else if (A > lambda) {return((A-lambda)/B)}
+  else if (A >= -lambda & A <= lambda) {return(0)}
+}
+
+#Main function for the cyclic coordinate algorithm
+CCD_beta <- function(X, Y, lambda, maxit=1e4, delta=1e-4){
+  n <- dim(X)[1]
+  i <- 1
+  beta <- rep(0.5, dim(X)[2])
+  while (i<maxit){
+    beta_old <- beta
+    for (j in 1:length(beta)){
+      X_nocol_j <- X[,-j]
+      A <- as.numeric( t(X[,j]) %*% (Y-X_nocol_j %*% beta[-j]) )/n
+      B <- sum(X[,j]^2)/n
+      beta[j] <- update_beta(A=A, B=B, lambda=lambda)
+    }
+    if ( sum((beta-beta_old)^2)<delta ) break
+    i <- i+1
+    #if (i %in% c(1e5, 3e5, 5e5, 7e5, 9e5)){print(i)}
+  }
+  
+  return(beta)
+}
+```
+
+Below, we try the algorithm using gene $1$. Since it's a little computationally burdensome, I set the maximum iterations to $100$ for illustration, which means it may not converge. But the function above does have some convergence check if setting "maxit" large.
+```{r, eval=F}
+#prepare the data
+Y <- extract_Y(1)
+X <- cbind(rep(1, length(Y)), extract_X(1)) #X matrix plus an intercept column
+#dim(X)
+
+beta_CCD <- CCD_beta(X=X, Y=Y, lambda=0.378, maxit=100)
+#beta_CCD[1:20]
+```
+
+To conduct the comparisons for other gene ID=1:545 (and other lambda values), we can do the following code and compare the coefficient estimates in some desired ways.
+```{r, eval=F}
+
+#Give an ID and a lambda value
+ID <- 100
+lambda <- 0.5
+
+Y <- extract_Y(ID)
+X <- cbind(rep(1, length(Y)), extract_X(ID))
+
+#glmnet
+glmnet_model <- glmnet(x=X[-1,], 
+                       y=Y, 
+                       alpha=1, lambda=lambda)
+coef(glmnet_model)
+
+#CCD
+coef_CCD <- CCD_beta(X=X, Y=Y, lambda=lambda)
+coef_CCD
+```
+
+
+
