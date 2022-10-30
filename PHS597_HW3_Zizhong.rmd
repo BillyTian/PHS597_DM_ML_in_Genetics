@@ -1,0 +1,122 @@
+---
+title: "PHS597 Data Mining and ML in Genetics HW#3"
+author: "Zizhong Tian"
+date: "10/28/2022"
+output: html_document
+---
+
+### Implement separating hyperplane algorithm (perceptron algorithm), using both the standardized vector $\beta$ and non-standardized one:
+
+I tried some big real data and found that the algorithm might often not converge (maybe due to the absence of a separating hyperplane when too many covariates). Therefore, I simulate a binary-outcome data for testing the two slightly different algorithms.
+
+## Simulate a binary classification data
+```{r, warning=F, message=F}
+n <- 200
+set.seed(1234)
+X1 <- rnorm(n, mean=1, sd=1)
+X2 <- rnorm(n, mean=2, sd=2)
+X3 <- rbinom(n, 1, prob=0.6)
+#epsilon <- rnorm(n, mean=0, sd=1)
+
+beta0 <- 1
+beta1 <- 1.5
+beta2 <- -0.8
+beta3 <- -0.6
+
+#p <- exp(beta0+beta1*X1+beta2*X2+beta3*X3+epsilon)/(1+exp(beta0+beta1*X1+beta2*X2+beta3*X3+epsilon))
+
+X <- cbind(rep(1,n), X1, X2, X3)
+beta_t <- c(beta0, beta1, beta2, beta3)
+
+#set a true boundary line
+L <- as.numeric(X %*% beta_t)
+
+Y <- ifelse(L>0, 1, -1)
+table(Y)
+```
+
+## Implement Separating Hyperplane
+For $i=1,...,n$, $y_i=1$ or $-1$. In our simulated data, I include three covariates. Denote $X_i=[1~~x_{1i}~~x_{2i}~~x_{3i}]$ and $\beta=[\beta_0~~\beta_1~~\beta_2~~\beta_3]^T$. We wish to minimize the overall misclassifcation rate 
+$$D(\beta)=-\sum_{i\in M} y_i(X_i\beta),~~M=\text{set of misclassified points}$$
+We firstly take the derivative for the overall misclassification rate:
+$$\frac{\partial D(\beta)}{\partial \beta}=-\sum_{i\in M}y_iX_iI=-\sum_{i\in M}y_iX_i$$
+Update $\beta$ via stochastic gradient descent algorithm:
+$$\beta^{(k+1)} \leftarrow \beta^{(k)}+ \rho y_iX_i^T,~~i\text{ is randomly sampled from}~M$$
+After each updating iteration, $M$ is updated.
+
+```{r}
+rho <- 0.05
+
+beta_old <- rep(1, 4)
+
+maxit <- 1e5
+tol <- 1e-5
+i <- 1
+
+set.seed(1234)
+while (i < maxit){
+  pred <- ifelse(as.numeric(X %*% beta_old)>0, 1, -1)
+  mis_ind <- which(pred!=Y)
+  
+  if (length(mis_ind)==0) {break}
+  
+  sto_ind <- sample(mis_ind, 1)
+  beta_new <- beta_old + rho*Y[sto_ind]*as.numeric(X[sto_ind,])
+  
+  if ( sum((beta_new-beta_old)^2)<tol ) {break}
+  
+  beta_old <- beta_new
+  i <- i+1
+}
+
+beta_nonstd <- beta_old
+
+```
+
+
+## Implement Separating Hyperplane (standardized $\beta$)
+With the same notations, we wish to minimize the overall misclassifcation rate 
+$$D(\beta)=-\sum_{i\in M} y_i\frac{X_i\beta}{||\beta||},~~M=\text{set of misclassified points}$$
+We firstly take the derivative for the overall misclassification rate:
+$$\frac{\partial D(\beta)}{\partial \beta}=-\sum_{i\in M}y_iX_i\left[\frac{I}{||\beta||}-\frac{1}{2}\times 2 \beta\beta^T(\beta^T\beta)^{-\frac{3}{2}}\right]=-\sum_{i\in M}y_iX_i\left[\frac{I}{||\beta||}-\frac{\beta\beta^T}{||\beta||^3}\right]$$
+Update $\beta$ via stochastic gradient descent algorithm:
+$$\beta^{(k+1)} \leftarrow \beta^{(k)}+ \rho y_i\left(\frac{I}{||\beta^{(k)}||}-\frac{\beta^{(k)}\beta^{(k)T}}{||\beta^{(k)}||^3}\right)^TX_i^T ,~~i\text{ is randomly sampled from}~M$$
+After each updating iteration, $M$ is updated.
+
+```{r}
+rho <- 0.05
+
+beta_old <- rep(1, 4)
+
+maxit <- 1e5
+tol <- 1e-5
+i <- 1
+
+set.seed(1234)
+while (i < maxit){
+  pred <- ifelse(as.numeric(X %*% beta_old)>0, 1, -1)
+  mis_ind <- which(pred!=Y)
+  
+  if (length(mis_ind)==0) {break}
+  
+  sto_ind <- sample(mis_ind, 1)
+  beta_old_norm <- sqrt(sum(beta_old^2))
+  I <- diag(1, nrow=4)
+  beta_new <- beta_old + rho*Y[sto_ind]*as.numeric( ( I/beta_old_norm-beta_old%*%t(beta_old)/(beta_old_norm^3) ) %*% as.numeric(X[sto_ind,]) )
+  
+  if ( sum((beta_new-beta_old)^2)<tol ) {break}
+  
+  beta_old <- beta_new
+  i <- i+1
+}
+
+beta_std <- beta_old
+```
+
+
+Comparing the results from the two methods, the estimates are different given the same initial value and step size, which means the estimated separating hyperplanes are slightly different. But, both of them can complete the classification mission perfectly ($100\%$ accuracy rate) and converge quickly.
+```{r}
+cbind(beta_nonstd, beta_std)
+```
+
+
